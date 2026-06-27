@@ -3,6 +3,7 @@ import torch
 from torch import optim
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
+from typing import Any, Dict, Tuple
 
 def save_checkpoint(
     model: Module,
@@ -39,10 +40,28 @@ def load_checkpoint(
     optimizer: optim.Optimizer,
     scheduler: LRScheduler | None,
     device: str,
-):
-    ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt["model_state"])
+) -> Tuple[Dict[str, Any], Dict[str, Any], Any, int, int, float, Dict[str, Any]]:
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    state = ckpt["model_state"]
+
+    fixed: Dict[str, Any] = {}
+    for k, v in state.items():
+        if k.startswith("_orig_mod."):
+            fixed[k[len("_orig_mod."):]] = v
+        else:
+            fixed[k] = v
+
+    model.load_state_dict(fixed, strict=True)
     optimizer.load_state_dict(ckpt["optimizer_state"])
     if scheduler and ckpt["scheduler_state"] is not None:
         scheduler.load_state_dict(ckpt["scheduler_state"])
-    return ckpt["epoch"], ckpt["step"], ckpt["best_val_loss"], ckpt["configs"]
+
+    return (
+        fixed,
+        ckpt["optimizer_state"],
+        ckpt["scheduler_state"],
+        ckpt["epoch"],
+        ckpt["step"],
+        ckpt["best_val_loss"],
+        ckpt["configs"],
+    )

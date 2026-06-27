@@ -17,8 +17,8 @@ from llm.dataset import create_datasets_from_sections
 
 torch.manual_seed(42)
 
-DATASET_PATH = "src/data/processed/unified/v001/train.txt"
-TOKENIZER_PATH = "src/data/processed/unified/v001/tokenizer.json"
+DATASET_PATH = "src/data/processed/unified/train.txt"
+TOKENIZER_PATH = "src/data/processed/unified/tokenizer.json"
 
 TOKENIZER_CONFIG = TokenizerConfig(
     mapping_path=TOKENIZER_PATH,

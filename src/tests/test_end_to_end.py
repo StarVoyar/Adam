@@ -5,12 +5,12 @@ from src.llm.dataset import create_datasets_from_sections
 from src.llm.transformer import Transformer, TransformerConfig
 
 def run():
-    tokenizer = BPETokenizer(Path("src/data/processed/unified/v001/tokenizer.json"))
+    tokenizer = BPETokenizer(Path("src/data/processed/unified/tokenizer.json"))
 
     datasets = create_datasets_from_sections(
-        "src/data/processed/unified/v001/train.txt",
+        "src/data/processed/unified/train.txt",
         128,
-        "src/data/processed/unified/v001/tokenizer.json"
+        "src/data/processed/unified/tokenizer.json"
     )
 
     name, ds = list(datasets.items())[0]

@@ -50,8 +50,8 @@ def create_datasets_from_sections(
 
 '''
 if __name__ == "__main__":
-    dataset_path = "src/data/processed/unified/v001/train.txt"
-    tokenizer_path = "src/data/processed/unified/v001/tokenizer.json"
+    dataset_path = "src/data/processed/unified/train.txt"
+    tokenizer_path = "src/data/processed/unified/tokenizer.json"
 
     datasets = create_datasets_from_sections(dataset_path, 128, tokenizer_path)
 

@@ -5,8 +5,8 @@ from tokenizers.trainers import BpeTrainer
 from tokenizers.pre_tokenizers import Whitespace
 
 ROOT = Path(__file__).resolve().parents[3]
-DATASET_PATH = ROOT / "src" / "data" / "processed" / "unified" / "v001" / "all.txt"
-TOKENIZER_PATH = ROOT / "src" / "data" / "processed" / "unified" / "v001" / "tokenizer.json"
+DATASET_PATH = ROOT / "src" / "data" / "processed" / "unified" / "all.txt"
+TOKENIZER_PATH = ROOT / "src" / "data" / "processed" / "unified" / "tokenizer.json"
 
 tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
 tokenizer.pre_tokenizer = Whitespace()

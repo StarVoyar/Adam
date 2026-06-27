@@ -7,7 +7,7 @@ from sklearn.model_selection import train_test_split
 ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = ROOT / "src" / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
-PROCESSED_DATA_DIR = DATA_DIR / "processed" / "unified" / "v001"
+PROCESSED_DATA_DIR = DATA_DIR / "processed" / "unified"
 VAL_SIZE = 0.1
 
 csv_files = [p for p in RAW_DATA_DIR.rglob("*.csv") if p.is_file()]

@@ -12,7 +12,6 @@ from torch.amp.grad_scaler import GradScaler
 
 from llm.tokenizer import BPETokenizer, TokenizerType, TokenizerConfig
 from llm.transformer import Transformer, TransformerConfig
-from llm.utils import fetch_device
 from llm.checkpoint import save_checkpoint
 from llm.dataset import create_datasets_from_sections
 
@@ -43,15 +42,28 @@ CKPT_EVERY = 1000
 WARMUP = 1000
 ACCUM_STEPS = 1
 
-device = fetch_device()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+use_cuda = device.type == "cuda"
 
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision("high")
+if use_cuda:
+    autocast_device = "cuda"
+    scaler = GradScaler("cuda")
+else:
+    autocast_device = "cpu"
+    scaler = GradScaler(enabled=False)
 
-torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_math_sdp(True)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
+num_workers = 8 if use_cuda else 0
+persistent = True if use_cuda else False
+pin = True if use_cuda else False
+prefetch = 4 if use_cuda else None
+
+if use_cuda:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_math_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 tokenizer = BPETokenizer(mapping_path=Path(TOKENIZER_PATH))
 
@@ -62,7 +74,6 @@ sections = create_datasets_from_sections(
 )
 
 Sample = Tuple[torch.Tensor, torch.Tensor]
-
 
 class MergedDataset(Dataset[Sample]):
     def __init__(self, datasets: Dict[str, Any]) -> None:
@@ -84,7 +95,6 @@ class MergedDataset(Dataset[Sample]):
             idx -= length
         raise IndexError(idx)
 
-
 dataset = MergedDataset(sections)
 
 train_size = int(len(dataset) * 0.9)
@@ -99,20 +109,20 @@ train_loader = DataLoader(
     train_ds,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    pin_memory=True,
-    num_workers=8,
-    persistent_workers=True,
-    prefetch_factor=4,
+    pin_memory=pin,
+    num_workers=num_workers,
+    persistent_workers=persistent,
+    prefetch_factor=prefetch,
 )
 
 val_loader = DataLoader(
     val_ds,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    pin_memory=True,
-    num_workers=8,
-    persistent_workers=True,
-    prefetch_factor=4,
+    pin_memory=pin,
+    num_workers=num_workers,
+    persistent_workers=persistent,
+    prefetch_factor=prefetch,
 )
 
 model: Module = Transformer(
@@ -120,10 +130,11 @@ model: Module = Transformer(
     config=MODEL_CONFIG,
 ).to(device)
 
-model = cast(
-    Module,
-    torch.compile(model, mode="max-autotune", fullgraph=True),
-)
+if use_cuda:
+    model = cast(
+        Module,
+        torch.compile(model, mode="max-autotune", fullgraph=True),
+    )
 
 loss_fn = CrossEntropyLoss()
 
@@ -144,8 +155,6 @@ scheduler = optim.lr_scheduler.LambdaLR(
     lr_lambda=lr_schedule,
 )
 
-scaler = GradScaler("cuda")
-
 run_id = time.strftime("%Y-%m-%d_%H-%M-%S")
 run_dir = Path("model") / run_id
 run_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +162,7 @@ run_dir.mkdir(parents=True, exist_ok=True)
 def evaluate():
     model.eval()
     losses = []
-    with torch.no_grad(), autocast("cuda"):
+    with torch.no_grad(), autocast(autocast_device):
         for i, (x, y) in enumerate(val_loader):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
@@ -175,7 +184,7 @@ for epoch in range(TRAIN_EPOCHS):
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
-        with autocast("cuda"):
+        with autocast(autocast_device):
             out = model(x)
             loss = loss_fn(out.permute(0, 2, 1), y)
 

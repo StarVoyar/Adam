@@ -1,0 +1,16 @@
+[project]
+name = "Adam"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "datasets>=5.0.0",
+    "matplotlib>=3.11.0",
+    "numpy>=2.5.0",
+    "tokenizers>=0.22.2",
+    "torch>=2.12.1",
+    "tqdm>=4.68.3",
+    "transformers>=5.12.1",
+    "wandb>=0.28.0",
+]

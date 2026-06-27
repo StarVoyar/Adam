@@ -8,8 +8,8 @@ DATA_DIR = ROOT / "data" / "raw"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DATASETS = {
-    "pokemon": "https://raw.githubusercontent.com/lgreski/pokemonData/master/Pokemon.csv",
-    "yugioh": "hammadus/yugioh-full-card-database-index-august-1st-2025",
+    # "pokemon": "https://raw.githubusercontent.com/lgreski/pokemonData/master/Pokemon.csv",
+    # "yugioh": "hammadus/yugioh-full-card-database-index-august-1st-2025",
     "wordnet": "dfydata/wordnet-dictionary-thesaurus-files-in-csv-format",
 }
 

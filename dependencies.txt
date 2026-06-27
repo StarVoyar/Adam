@@ -1,0 +1,9 @@
+datasets>=5.0.0
+matplotlib>=3.11.0
+numpy>=2.5.0
+tokenizers>=0.22.2
+torch>=2.12.1
+tqdm>=4.68.3
+transformers>=5.12.1
+kagglehub>=0.3.0
+scikit-learn>=1.5.0

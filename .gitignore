@@ -15,4 +15,5 @@ src/data/
 .vscode/
 
 # Testing
-src/tests/
+src/tests/checkpoints_test/
+src/tests/tests.txt

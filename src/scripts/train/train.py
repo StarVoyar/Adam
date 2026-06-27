@@ -1,13 +1,15 @@
 import math
 import time
 import torch
-import wandb
 from pathlib import Path
 from tqdm import tqdm
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, cast
 from torch.utils.data import DataLoader, Dataset
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, Module
 from torch import optim
+from torch.amp.autocast_mode import autocast
+from torch.amp.grad_scaler import GradScaler
+
 from llm.tokenizer import BPETokenizer, TokenizerType, TokenizerConfig
 from llm.transformer import Transformer, TransformerConfig
 from llm.utils import fetch_device
@@ -34,21 +36,24 @@ MODEL_CONFIG = TransformerConfig(
 )
 
 TRAIN_EPOCHS = 1
-BATCH_SIZE = 8
+BATCH_SIZE = 256
 VAL_BATCHES = 10
 LOG_EVERY = 100
 CKPT_EVERY = 1000
 WARMUP = 1000
-
-USE_WANDB = False
-WANDB_ENTITY = "your_wandb_entity"
-WANDB_PROJECT = "adam-llm"
+ACCUM_STEPS = 1
 
 device = fetch_device()
 
-tokenizer = BPETokenizer(
-    mapping_path=Path(TOKENIZER_CONFIG.mapping_path)
-)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_math_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+
+tokenizer = BPETokenizer(mapping_path=Path(TOKENIZER_PATH))
 
 sections = create_datasets_from_sections(
     dataset_path=DATASET_PATH,
@@ -58,16 +63,12 @@ sections = create_datasets_from_sections(
 
 Sample = Tuple[torch.Tensor, torch.Tensor]
 
+
 class MergedDataset(Dataset[Sample]):
     def __init__(self, datasets: Dict[str, Any]) -> None:
-        self.datasets: list[Dataset[Sample]] = []
-        self.lengths: list[int] = []
-
-        for ds in datasets.values():
-            self.datasets.append(ds)
-            self.lengths.append(len(ds))
-
-        self.total: int = sum(self.lengths)
+        self.datasets = list(datasets.values())
+        self.lengths = [len(ds) for ds in self.datasets]
+        self.total = sum(self.lengths)
 
     def __len__(self) -> int:
         return self.total
@@ -76,10 +77,13 @@ class MergedDataset(Dataset[Sample]):
         for ds, length in zip(self.datasets, self.lengths):
             if idx < length:
                 x, y = ds[idx]
-                return torch.tensor(x, dtype=torch.long), torch.tensor(y, dtype=torch.long)
+                return (
+                    torch.as_tensor(x, dtype=torch.long),
+                    torch.as_tensor(y, dtype=torch.long),
+                )
             idx -= length
-
         raise IndexError(idx)
+
 
 dataset = MergedDataset(sections)
 
@@ -88,160 +92,112 @@ val_size = len(dataset) - train_size
 
 train_ds, val_ds = torch.utils.data.random_split(
     dataset,
-    [train_size, val_size]
+    [train_size, val_size],
 )
 
 train_loader = DataLoader(
     train_ds,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=0,
-    pin_memory=True
+    pin_memory=True,
+    num_workers=8,
+    persistent_workers=True,
+    prefetch_factor=4,
 )
 
 val_loader = DataLoader(
     val_ds,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=0,
-    pin_memory=True
+    pin_memory=True,
+    num_workers=8,
+    persistent_workers=True,
+    prefetch_factor=4,
 )
 
-model = Transformer(
+model: Module = Transformer(
     vocab_size=tokenizer.vocab_size(),
     config=MODEL_CONFIG,
 ).to(device)
 
+model = cast(
+    Module,
+    torch.compile(model, mode="max-autotune", fullgraph=True),
+)
+
 loss_fn = CrossEntropyLoss()
 
-optimizer = optim.Adam(
+optimizer = optim.AdamW(
     model.parameters(),
-    lr=1.0,
-    betas=(0.9, 0.98),
-    eps=1e-9
+    lr=3e-4,
+    betas=(0.9, 0.95),
+    weight_decay=0.1,
+    fused=True,
 )
 
 def lr_schedule(step: int) -> float:
     step = max(step, 1)
-    return (
-        MODEL_CONFIG.embedding_dim ** -0.5
-        *
-        min(
-            step ** -0.5,
-            step * WARMUP ** -1.5
-        )
-    )
+    return MODEL_CONFIG.embedding_dim ** -0.5 * min(step ** -0.5, step * WARMUP ** -1.5)
 
 scheduler = optim.lr_scheduler.LambdaLR(
     optimizer,
-    lr_lambda=lr_schedule
+    lr_lambda=lr_schedule,
 )
 
-run_id = time.strftime("%Y-%m-%d_%H-%M-%S")
+scaler = GradScaler("cuda")
 
+run_id = time.strftime("%Y-%m-%d_%H-%M-%S")
 run_dir = Path("model") / run_id
 run_dir.mkdir(parents=True, exist_ok=True)
-
-wandb_run = None
-
-if USE_WANDB:
-    wandb_run = wandb.init(
-        entity=WANDB_ENTITY,
-        project=WANDB_PROJECT,
-        name=run_id,
-        config={
-            "model": MODEL_CONFIG.__dict__,
-            "tokenizer": TOKENIZER_CONFIG.__dict__
-        }
-    )
 
 def evaluate():
     model.eval()
     losses = []
-
-    with torch.no_grad():
+    with torch.no_grad(), autocast("cuda"):
         for i, (x, y) in enumerate(val_loader):
-            x = x.to(device)
-            y = y.to(device)
-
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
             out = model(x)
-
-            loss = loss_fn(
-                out.permute(0, 2, 1),
-                y
-            )
-
+            loss = loss_fn(out.permute(0, 2, 1), y)
             losses.append(loss.item())
-
             if i >= VAL_BATCHES:
                 break
-
     model.train()
-
     avg = sum(losses) / len(losses)
-
     return avg, math.exp(avg)
 
 step = 0
 best = float("inf")
 
 for epoch in range(TRAIN_EPOCHS):
-
     start = time.perf_counter()
+    for x, y in tqdm(train_loader, desc=f"epoch {epoch}", ncols=100):
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
 
-    for x, y in tqdm(
-        train_loader,
-        desc=f"epoch {epoch}",
-        ncols=100
-    ):
+        with autocast("cuda"):
+            out = model(x)
+            loss = loss_fn(out.permute(0, 2, 1), y)
 
-        x = x.to(device)
-        y = y.to(device)
+        scaler.scale(loss).backward()
 
-        out = model(x)
-
-        loss = loss_fn(
-            out.permute(0, 2, 1),
-            y
-        )
-
-        optimizer.zero_grad()
-
-        loss.backward()
-
-        optimizer.step()
-
-        scheduler.step()
+        if (step + 1) % ACCUM_STEPS == 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
 
         step += 1
 
         if step % LOG_EVERY == 0:
-
             lr = optimizer.param_groups[0]["lr"]
-
-            print(
-                f"epoch={epoch} step={step} loss={loss.item():.4f} lr={lr:.2e}"
-            )
-
-            if wandb_run:
-                wandb_run.log(
-                    {
-                        "train/loss": loss.item(),
-                        "train/lr": lr
-                    },
-                    step=step
-                )
+            print(f"epoch={epoch} step={step} loss={loss.item():.4f} lr={lr:.2e}")
 
         if step % CKPT_EVERY == 0:
-
             val_loss, ppl = evaluate()
-
-            print(
-                f"val_loss={val_loss:.4f} ppl={ppl:.2f}"
-            )
+            print(f"val_loss={val_loss:.4f} ppl={ppl:.2f}")
 
             name = "checkpoint.pt"
-
             if val_loss < best:
                 best = val_loss
                 name = "adam.pt"
@@ -259,19 +215,11 @@ for epoch in range(TRAIN_EPOCHS):
                 best_val_loss=best,
                 configs={
                     "model": MODEL_CONFIG.__dict__,
-                    "tokenizer": TOKENIZER_CONFIG.__dict__
-                }
+                    "tokenizer": TOKENIZER_CONFIG.__dict__,
+                },
             )
 
-    print(
-        f"epoch {epoch} finished in {time.perf_counter() - start:.2f}s"
-    )
+    print(f"epoch {epoch} finished in {time.perf_counter() - start:.2f}s")
 
 loss, ppl = evaluate()
-
-print(
-    f"final loss={loss:.4f} ppl={ppl:.2f}"
-)
-
-if wandb_run:
-    wandb_run.finish()
+print(f"final loss={loss:.4f} ppl={ppl:.2f}")

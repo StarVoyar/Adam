@@ -60,6 +60,4 @@ def generate(prompt: str, max_new_tokens: int = 64) -> str:
         x = torch.cat([x, next_token], dim=1)
     return tokenizer.decode(x[0].cpu())
 
-print(generate("pokemon: pikachu"))
-print(generate("pokemon: charizard"))
-print(generate("pokemon: mewtwo"))
+print(generate("happy"))
